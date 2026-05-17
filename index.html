@@ -250,6 +250,7 @@ const CHEERS = [
 
 // ==================== AUDIO ====================
 let audioCtx=null, masterGain=null, muted=false, bgmOn=false, bgmTimer=null;
+const AUDIO_MIN_GAIN=0.001; // exponentialRampToValueAtTime cannot accept 0
 
 function getAudio(){
   if(!audioCtx) audioCtx=new(window.AudioContext||window.webkitAudioContext)();
@@ -274,11 +275,11 @@ function playTone(freq,type,startTime,duration,vol=0.06,rampDown=true){
     osc.type=type; osc.frequency.setValueAtTime(freq,t);
     if(rampDown){
       env.gain.setValueAtTime(0,t); env.gain.linearRampToValueAtTime(vol,t+0.015);
-      env.gain.exponentialRampToValueAtTime(0.001,t+duration);
+      env.gain.exponentialRampToValueAtTime(AUDIO_MIN_GAIN,t+duration);
     } else {
       env.gain.setValueAtTime(vol,t);
       env.gain.setValueAtTime(vol,t+duration-0.03);
-      env.gain.exponentialRampToValueAtTime(0.001,t+duration);
+      env.gain.exponentialRampToValueAtTime(AUDIO_MIN_GAIN,t+duration);
     }
     osc.connect(env); env.connect(mg);
     osc.start(t); osc.stop(t+duration+0.02);
@@ -297,7 +298,7 @@ function sfxThrow(){
     const bp=ctx.createBiquadFilter(); bp.type='bandpass';
     bp.frequency.value=800+Math.random()*600; bp.Q.value=0.5;
     const env=ctx.createGain();
-    env.gain.setValueAtTime(0.05,t); env.gain.exponentialRampToValueAtTime(0.001,t+0.16);
+    env.gain.setValueAtTime(0.05,t); env.gain.exponentialRampToValueAtTime(AUDIO_MIN_GAIN,t+0.16);
     src.connect(bp); bp.connect(env); env.connect(mg);
     src.start(t);
   }catch(e){}
@@ -414,6 +415,7 @@ const STATE={
   W:900, H:600,
   fieldX:80,fieldY:65,fieldW:740,fieldH:430,
   ringStartX:450,ringStartY:460,
+  groundDots:[],
 };
 
 function rand(min,max){ return min+Math.random()*(max-min); }
@@ -441,6 +443,7 @@ function recalcLayout(){
   STATE.ringStartX=Math.floor(W/2);
   STATE.ringStartY=Math.floor(H*0.82);
 
+  cachedStartEmojis=null;
   // Update distances relative to screen
   const scale=Math.min(W/900, H/600);
   STATE._scale=scale;
@@ -451,7 +454,78 @@ function recalcLayout(){
   CFG.perfectThresh=Math.round(28*scale);
   CFG.minTargetDist=Math.round(40*scale);
   CFG.flightMs=Math.round(600*scale);
+  // Pre-generate ground decoration dots
+  STATE.groundDots=[];
+  for(let i=0;i<30;i++){
+    STATE.groundDots.push({dx:STATE.fieldX+rand(20,STATE.fieldW-40), dy:STATE.fieldY+rand(20,STATE.fieldH-40)});
+  }
 }
+
+// ==================== LEVEL LAYOUTS ====================
+const LAYOUTS={
+  grid2(cx,cy,s){
+    const p=[]; for(let r=0;r<2;r++)for(let c=0;c<5;c++)
+      p.push({sx:cx+(c-2)*s*0.45, sy:cy+(r-0.5)*s*0.65});
+    return p;
+  },
+  grid(cx,cy,s){
+    const p=[]; for(let r=0;r<3;r++)for(let c=0;c<4;c++)
+      p.push({sx:cx+(c-1.5)*s*0.38, sy:cy+(r-1)*s*0.45});
+    return p.slice(0,10);
+  },
+  diamond(cx,cy,s){
+    const p=[{sx:cx,sy:cy-s*0.55}];
+    for(let r=1;r<=3;r++){const n=r*4; for(let i=0;i<n;i++){
+      const a=(i/n)*Math.PI*2+Math.PI/n;
+      p.push({sx:cx+Math.cos(a)*r*s*0.2, sy:cy+Math.sin(a)*r*s*0.15});
+    }}
+    return p.slice(0,10);
+  },
+  stagger(cx,cy,s){
+    const p=[]; for(let r=0;r<4;r++){const n=r<2?3:2;
+      const off=r%2==0?0:s*0.22;
+      for(let c=0;c<n;c++) p.push({sx:cx+(c-(n-1)/2)*s*0.5+off,sy:cy+(r-1.5)*s*0.4});
+    } return p;
+  },
+  circle(cx,cy,s){
+    return Array.from({length:10},(_,i)=>({
+      sx:cx+Math.cos(i/10*Math.PI*2)*s*0.44, sy:cy+Math.sin(i/10*Math.PI*2)*s*0.35
+    }));
+  },
+  clusters(cx,cy,s){
+    const p=[], cxs=[cx-s*0.38,cx+s*0.38], cys=[cy-s*0.22,cy+s*0.28];
+    for(let ci=0;ci<2;ci++)for(let i=0;i<5;i++)
+      p.push({sx:cxs[ci]+(i-2)*s*0.24+rand(-7,7),sy:cys[ci]+(Math.floor(i/3)-0.5)*s*0.32+rand(-6,6)});
+    return p;
+  },
+  scatter(cx,cy,s){
+    return Array.from({length:10},()=>({
+      sx:cx-s*0.6+rand(0,s*1.2), sy:cy-s*0.5+rand(0,s*1.0)
+    }));
+  },
+  zigzag(cx,cy,s){
+    const p=[]; for(let r=0;r<4;r++){const n=r<2?3:2;
+      for(let c=0;c<n;c++){
+        const zig=r%2==0?c*s*0.42:(n-1-c)*s*0.42;
+        p.push({sx:cx-s*0.48+zig,sy:cy-s*0.48+r*s*0.34});
+      }
+    } return p;
+  },
+  ring(cx,cy,s){
+    return Array.from({length:10},(_,i)=>({
+      sx:cx+Math.cos(i/10*Math.PI*2)*s*0.4, sy:cy+Math.sin(i/10*Math.PI*2)*s*0.3
+    }));
+  },
+  mixed(cx,cy,s){
+    const inner=Array.from({length:4},(_,i)=>({
+      sx:cx+Math.cos(i/4*Math.PI*2)*s*0.16,sy:cy+Math.sin(i/4*Math.PI*2)*s*0.13
+    }));
+    const outer=Array.from({length:6},(_,i)=>({
+      sx:cx+Math.cos(i/6*Math.PI*2)*s*0.42,sy:cy+Math.sin(i/6*Math.PI*2)*s*0.32
+    }));
+    return [...inner,...outer];
+  },
+};
 
 // ==================== LEVEL GENERATION ====================
 function generateLevel(levelIdx){
@@ -461,72 +535,7 @@ function generateLevel(levelIdx){
   const spread=lv.spread*STATE._scale;
   const targets=[];
 
-  const layouts={
-    grid2(cx,cy,s){
-      const p=[]; for(let r=0;r<2;r++)for(let c=0;c<5;c++)
-        p.push({sx:cx+(c-2)*s*0.45, sy:cy+(r-0.5)*s*0.65});
-      return p;
-    },
-    grid(cx,cy,s){
-      const p=[]; for(let r=0;r<3;r++)for(let c=0;c<4;c++)
-        p.push({sx:cx+(c-1.5)*s*0.38, sy:cy+(r-1)*s*0.45});
-      return p.slice(0,10);
-    },
-    diamond(cx,cy,s){
-      const p=[{sx:cx,sy:cy-s*0.55}];
-      for(let r=1;r<=3;r++){const n=r*4; for(let i=0;i<n;i++){
-        const a=(i/n)*Math.PI*2+Math.PI/n;
-        p.push({sx:cx+Math.cos(a)*r*s*0.2, sy:cy+Math.sin(a)*r*s*0.15});
-      }}
-      return p.slice(0,10);
-    },
-    stagger(cx,cy,s){
-      const p=[]; for(let r=0;r<4;r++){const n=r<2?3:2;
-        const off=r%2==0?0:s*0.22;
-        for(let c=0;c<n;c++) p.push({sx:cx+(c-(n-1)/2)*s*0.5+off,sy:cy+(r-1.5)*s*0.4});
-      } return p;
-    },
-    circle(cx,cy,s){
-      return Array.from({length:10},(_,i)=>({
-        sx:cx+Math.cos(i/10*Math.PI*2)*s*0.44, sy:cy+Math.sin(i/10*Math.PI*2)*s*0.35
-      }));
-    },
-    clusters(cx,cy,s){
-      const p=[], cxs=[cx-s*0.38,cx+s*0.38], cys=[cy-s*0.22,cy+s*0.28];
-      for(let ci=0;ci<2;ci++)for(let i=0;i<5;i++)
-        p.push({sx:cxs[ci]+(i-2)*s*0.24+rand(-7,7),sy:cys[ci]+(Math.floor(i/3)-0.5)*s*0.32+rand(-6,6)});
-      return p;
-    },
-    scatter(cx,cy,s){
-      return Array.from({length:10},()=>({
-        sx:cx-s*0.6+rand(0,s*1.2), sy:cy-s*0.5+rand(0,s*1.0)
-      }));
-    },
-    zigzag(cx,cy,s){
-      const p=[]; for(let r=0;r<4;r++){const n=r<2?3:2;
-        for(let c=0;c<n;c++){
-          const zig=r%2==0?c*s*0.42:(n-1-c)*s*0.42;
-          p.push({sx:cx-s*0.48+zig,sy:cy-s*0.48+r*s*0.34});
-        }
-      } return p;
-    },
-    ring(cx,cy,s){
-      return Array.from({length:10},(_,i)=>({
-        sx:cx+Math.cos(i/10*Math.PI*2)*s*0.4, sy:cy+Math.sin(i/10*Math.PI*2)*s*0.3
-      }));
-    },
-    mixed(cx,cy,s){
-      const inner=Array.from({length:4},(_,i)=>({
-        sx:cx+Math.cos(i/4*Math.PI*2)*s*0.16,sy:cy+Math.sin(i/4*Math.PI*2)*s*0.13
-      }));
-      const outer=Array.from({length:6},(_,i)=>({
-        sx:cx+Math.cos(i/6*Math.PI*2)*s*0.42,sy:cy+Math.sin(i/6*Math.PI*2)*s*0.32
-      }));
-      return [...inner,...outer];
-    },
-  };
-
-  const allPts=layouts[lv.layout](cx,cy,spread);
+  const allPts=LAYOUTS[lv.layout](cx,cy,spread);
   const shuffledEmoji=shuffle(EMOJI_POOL).slice(0,lv.n);
   const minD=CFG.minTargetDist;
 
@@ -607,9 +616,8 @@ function drawGround(){
   ctx.setLineDash([10,6]); ctx.stroke(); ctx.setLineDash([]);
 
   ctx.fillStyle='rgba(200,170,185,0.18)';
-  for(let i=0;i<30;i++){
-    const dx=f.fieldX+rand(20,f.fieldW-40), dy=f.fieldY+rand(20,f.fieldH-40);
-    ctx.beginPath(); ctx.arc(dx,dy,1.5,0,Math.PI*2); ctx.fill();
+  for(const d of f.groundDots){
+    ctx.beginPath(); ctx.arc(d.dx,d.dy,1.5,0,Math.PI*2); ctx.fill();
   }
 }
 
@@ -722,7 +730,7 @@ canvas.addEventListener('pointermove', e=>{
 canvas.addEventListener('pointerup', e=>{
   if(!STATE.pointerDown) return;
   STATE.pointerDown=false;
-  if(STATE.phase==='playing' && !STATE.ringFlying) throwRing();
+  if(STATE.phase==='playing' && !STATE.ringFlying && STATE.power>0.03) throwRing();
 });
 canvas.addEventListener('pointerleave', ()=>{
   if(STATE.pointerDown&&STATE.phase==='playing'&&!STATE.ringFlying&&STATE.power>0.03){
@@ -834,15 +842,13 @@ function showLevelComplete(){
   showOverlay('ov-level');
   wireBtn('btn-next',()=>{
     hideOverlay('ov-level');
-    STATE.totalScore+=STATE.score; STATE.score=0;
-    STATE.level++; STATE.maxCombo=0; STATE.perfects=0;
+    STATE.totalScore+=STATE.score; resetRunScores(); STATE.level++;
     if(STATE.level>=CFG.levels.length) showGameOver();
     else{ beginLevel(); sfxLevelUp(); }
   });
   wireBtn('btn-to-select',()=>{
     hideOverlay('ov-level');
-    STATE.totalScore+=STATE.score; STATE.score=0;
-    STATE.maxCombo=0; STATE.perfects=0;
+    STATE.totalScore+=STATE.score; resetRunScores();
     showLevelSelect();
   });
 }
@@ -857,12 +863,12 @@ function showLevelFail(){
   showOverlay('ov-fail');
   wireBtn('btn-retry',()=>{
     hideOverlay('ov-fail');
-    STATE.score=0; STATE.maxCombo=0; STATE.perfects=0;
+    resetRunScores();
     beginLevel(); sfxLevelUp();
   });
   wireBtn('btn-fail-select',()=>{
     hideOverlay('ov-fail');
-    STATE.score=0; STATE.maxCombo=0; STATE.perfects=0;
+    resetRunScores();
     showLevelSelect();
   });
 }
@@ -896,8 +902,7 @@ function showLevelSelect(){
       if(i<STATE.unlockedLevel){const s=document.createElement('span');s.className='lv-star';s.textContent='⭐';cell.appendChild(s);}
       cell.addEventListener('click',()=>{
         hideOverlay('ov-select');
-        STATE.level=i; STATE.score=0; STATE.totalScore=0;
-        STATE.maxCombo=0; STATE.perfects=0;
+        STATE.level=i; resetRunScores();
         beginLevel(); sfxLevelUp();
       });
     }else{cell.classList.add('locked');cell.textContent='🔒';}
@@ -907,20 +912,27 @@ function showLevelSelect(){
   wireBtn('btn-back-start',()=>{hideOverlay('ov-select');showOverlay('ov-start');STATE.phase='start';});
 }
 
+// ==================== STATE HELPERS ====================
+function resetRunScores(){
+  STATE.score=0; STATE.maxCombo=0; STATE.perfects=0;
+}
+function resetFullGame(){
+  STATE.level=0; STATE.score=0; STATE.totalScore=0;
+  STATE.unlockedLevel=0; STATE.maxCombo=0; STATE.perfects=0;
+}
+
 // ==================== GAME FLOW ====================
 function startGame(){
   getAudio();
   hideOverlay('ov-start');
-  STATE.level=0; STATE.score=0; STATE.totalScore=0;
-  STATE.unlockedLevel=0; STATE.maxCombo=0; STATE.perfects=0;
+  resetFullGame();
   beginLevel();
   try{sfxLevelUp();}catch(e){}
 }
 
 function restartGame(){
   hideOverlay('ov-end');
-  STATE.level=0; STATE.score=0; STATE.totalScore=0;
-  STATE.unlockedLevel=0; STATE.maxCombo=0; STATE.perfects=0;
+  resetFullGame();
   beginLevel(); sfxLevelUp();
 }
 
